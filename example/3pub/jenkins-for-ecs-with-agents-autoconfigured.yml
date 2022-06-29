@@ -241,9 +241,11 @@ Resources:
             - Name: SUBNET_IDS
               Value: !Join
                 - ''
-                - - !GetAtt VPCStack.Outputs.PrivateSubnet1
+                - - !GetAtt VPCStack.Outputs.PublicSubnet1
                   - ','
-                  - !GetAtt VPCStack.Outputs.PrivateSubnet2
+                  - !GetAtt VPCStack.Outputs.PublicSubnet2
+                  - ','
+                  - !GetAtt VPCStack.Outputs.PublicSubnet3
             - Name: JENKINS_USERNAME
               Value: !Ref JenkinsUsername
           Secrets:
