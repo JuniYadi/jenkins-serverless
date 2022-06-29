@@ -4,18 +4,20 @@ Parameters:
     Type: String
     AllowedPattern: '^.+$'
     Description: ARN of an existing certificate which will be attached to the ALB created by the stack, to serve HTTPS traffic (mandatory).
-  JenkinsDockerImage:
+  ClusterName:
     Type: String
-    Default: jenkins/jenkins:lts
+    Default: default-cluster
     AllowedPattern: '^.+$'
-    Description: Docker image used in the ECS task definition. Override the default to use a custom image (mandatory).
+  JenkinsJNLPPort:
+    Type: Number
+    Default: 50000
 Description: Provision the required resources for blog post example 'Deploying Jenkins to ECS'.
   Wait for creation to complete before testing.
 Resources:
   VPCStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://cloudformation-juniyadi-id.s3.ap-southeast-1.amazonaws.com/3pub/default-vpc.yml
+      TemplateURL: https://tomgregory-cloudformation-examples.s3-eu-west-1.amazonaws.com/default-vpc.yml
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -79,10 +81,18 @@ Resources:
       ToPort: 8080
       GroupId: !Ref JenkinsSecurityGroup
       SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  JenkinsJenkinsAgentSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: !Ref JenkinsJNLPPort
+      ToPort: !Ref JenkinsJNLPPort
+      GroupId: !Ref JenkinsSecurityGroup
+      SourceSecurityGroupId: !Ref JenkinsAgentSecurityGroup
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: default-cluster
+      ClusterName: !Ref ClusterName
   JenkinsExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -117,6 +127,53 @@ Resources:
                   - elasticfilesystem:ClientMount
                   - elasticfilesystem:ClientWrite
                 Resource: !Sub arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${FileSystemResource}
+        - PolicyName: create-jenkins-agents
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:ListClusters
+                  - ecs:DescribeContainerInstances
+                  - ecs:ListTaskDefinitions
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DeregisterTaskDefinition
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - ecs:ListContainerInstances
+                Effect: Allow
+                Resource:
+                  - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}
+              - Action:
+                  - ecs:RunTask
+                Effect: Allow
+                Condition:
+                  ArnEquals:
+                    ecs:cluster:
+                      - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}
+                Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/*
+              - Action:
+                  - ecs:StopTask
+                Effect: Allow
+                Condition:
+                  ArnEquals:
+                    ecs:cluster:
+                      - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}
+                Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*
+              - Action:
+                  - ecs:DescribeTasks
+                Effect: Allow
+                Condition:
+                  ArnEquals:
+                    ecs:cluster:
+                      - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterName}
+                Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*
+              - Action:
+                  - iam:GetRole
+                  - iam:PassRole
+                Effect: Allow
+                Resource: !GetAtt JenkinsExecutionRole.Arn
   JenkinsTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -131,9 +188,10 @@ Resources:
         - EC2
       ContainerDefinitions:
         - Name: jenkins
-          Image: !Ref JenkinsDockerImage
+          Image: jenkins/jenkins:lts
           PortMappings:
             - ContainerPort: 8080
+            - ContainerPort: !Ref JenkinsJNLPPort
           MountPoints:
             - SourceVolume: jenkins-home
               ContainerPath: /var/jenkins_home
@@ -173,15 +231,17 @@ Resources:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
           Subnets:
-            - !GetAtt VPCStack.Outputs.PublicSubnet1
-            - !GetAtt VPCStack.Outputs.PublicSubnet2
-            - !GetAtt VPCStack.Outputs.PublicSubnet3
+            - !GetAtt VPCStack.Outputs.PrivateSubnet1
+            - !GetAtt VPCStack.Outputs.PrivateSubnet2
           SecurityGroups:
             - !GetAtt JenkinsSecurityGroup.GroupId
       LoadBalancers:
         - ContainerName: jenkins
           ContainerPort: 8080
           TargetGroupArn: !Ref JenkinsTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+          Port: !Ref JenkinsJNLPPort
   EFSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -203,21 +263,14 @@ Resources:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref FileSystemResource
-      SubnetId: !GetAtt VPCStack.Outputs.PublicSubnet1
+      SubnetId: !GetAtt VPCStack.Outputs.PrivateSubnet1
       SecurityGroups:
         - !GetAtt EFSSecurityGroup.GroupId
   MountTargetResource2:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref FileSystemResource
-      SubnetId: !GetAtt VPCStack.Outputs.PublicSubnet2
-      SecurityGroups:
-        - !GetAtt EFSSecurityGroup.GroupId
-  MountTargetResource3:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref FileSystemResource
-      SubnetId: !GetAtt VPCStack.Outputs.PublicSubnet3
+      SubnetId: !GetAtt VPCStack.Outputs.PrivateSubnet2
       SecurityGroups:
         - !GetAtt EFSSecurityGroup.GroupId
   AccessPointResource:
@@ -233,6 +286,37 @@ Resources:
           OwnerUid: '1000'
           Permissions: '755'
         Path: '/jenkins-home'
+  JenkinsAgentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: JenkinsAgentSecurityGroup
+      GroupDescription: Security group for Jenkins agents
+      VpcId: !GetAtt VPCStack.Outputs.VPC
+  PrivateNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Ref AWS::StackName
+      Vpc: !GetAtt VPCStack.Outputs.VPC
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - TTL: 60
+            Type: A
+          - TTL: 60
+            Type: SRV
+      Name: jenkins
+      NamespaceId: !Ref PrivateNamespace
 Outputs:
   LoadBalancerDNSName:
     Value: !GetAtt LoadBalancer.DNSName
+  PrivateSubnet1:
+    Value: !GetAtt VPCStack.Outputs.PrivateSubnet1
+  PrivateSubnet2:
+    Value: !GetAtt VPCStack.Outputs.PrivateSubnet2
+  JenkinsAgentSecurityGroup:
+    Value: !Ref JenkinsAgentSecurityGroup
+  JenkinsExecutionRole:
+    Value: !GetAtt JenkinsExecutionRole.Arn
