@@ -1,0 +1,25 @@
+  clouds:
+    - ecs:
+        cluster: "<redacted>"
+        jenkinsUrl: "<redacted>"
+        name: "<redacted>"
+        regionName: "<redacted>"
+        credentialsId: ""
+        allowedOverrides: "all"
+        templates:
+          - assignPublicIp: false
+            cpu: 800
+            executionRole: "<redacted>"
+            image: "<redacted>"
+            label: "ch2"
+            launchType: "EC2"
+            logDriver: "<redacted>"
+            memory: 3572
+            memoryReservation: 2048
+            networkMode: "default"
+            privileged: false
+            remoteFSRoot: "<redacted>"
+            templateName: "ch2-template"
+            placementStrategies:
+              - field: "memory"
+                type: "binpack"
